@@ -1,0 +1,324 @@
+### {{ case }} vs {{ ctrl}}
+
+```{r}
+#| label: groupDiff{{random}}
+
+# This function will run both QC steps (krsa_filter_lowPeps, krsa_filter_nonLinear) and krsa_filter_ref_pep
+
+figure_folder <- "{{figure_output}}"
+pep_passed_qc <- clean_peptides
+
+data_modeled[["scaled"]] |>
+  filter(
+    Peptide %in% pep_passed_qc,
+    Group %in% c("{{case}}", "{{ctrl}}")
+  ) |>
+  write_csv(
+    file.path(
+      "results",
+      "{{run_prefix}}-signal_{{case}}_{{ctrl}}-{{chip}}.csv"
+    )
+  )
+
+# This function calculates log2 fold change values between the defined groups
+# The byChip argument lets you calculates the log2 fold change the results within each chip
+differential_phosphorylated_peptides <- krsa_group_diff(
+  data_modeled[["scaled"]], c("{{case}}", "{{ctrl}}"), pep_passed_qc,
+  byChip = TRUE
+)
+
+# save LFC table
+write_csv(
+  differential_phosphorylated_peptides,
+  file.path("results", "{{run_prefix}}-dpp_{{case}}_{{ctrl}}-{{chip}}.csv")
+)
+
+# Extract top peptides based on the LFC cutoff using average of LFCs across chips
+significant_peptides <- krsa_get_diff(
+  differential_phosphorylated_peptides,
+  totalMeanLFC,
+  c(0.15, 0.2, 0.3, 0.4)
+) %>% list(meanLFC = .)
+
+# Extract top peptides based on the LFC cutoff using per chip LFCs
+sigPepsPerChip <- krsa_get_diff_byChip(differential_phosphorylated_peptides, LFC, c(0.15, 0.2, 0.3, 0.4))
+
+# Combine the peptides hits in one list
+sigPeps_total <- list(significant_peptides, sigPepsPerChip) |>
+  unlist(recursive = FALSE) |>
+  unlist(recursive = FALSE)
+```
+
+#### Heatmap
+
+After applying the *Filtering Parameters* for this group comparison, only *`r length(significant_peptides$meanLFC[["0.2"]])`*/141 peptides carried forward in the analysis (i.e. *`r length(significant_peptides$meanLFC[["0.2"]])` hits*). Below are some figures to visualize the differences between these samples for considering these *hits*.
+
+```{r}
+#| label: heatmapInd{{random}}
+#| fig-cap: "Violin plot of two groups"
+
+# generates a heatmap using the selected groups and peptides
+nheatmap <- krsa_heatmap(data_modeled[["normalized"]],
+  significant_peptides[["meanLFC"]][["0.2"]],
+  groups = c("{{case}}", "{{ctrl}}"), scale = "row"
+)
+
+if (!nchar(figure_folder)==0) {
+  graphics.off()
+  pdf(file=paste(figure_folder, "{{case}}_vs_{{ctrl}}_heatmap", sep="/"))
+  grid::grid.newpage()
+  grid::grid.draw(nheatmap$gtable)
+  dev.off()
+}else {
+  grid::grid.newpage()
+  grid::grid.draw(nheatmap$gtable)
+}
+
+```
+
+#### Violin Plot
+
+Below, the violin plot visualizes the distribution of selected peptides for the analysis.
+
+```{r}
+#| label: violinIndPlot{{random}}
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Violin plot of two groups"
+
+# generates a violin plot using the selected groups and peptides
+
+
+if (!nchar(figure_folder)==0) {
+  krsa_violin_plot(data_modeled[["scaled"]],
+  significant_peptides[["meanLFC"]][["0.2"]],
+  "Barcode",
+  groups = c("{{case}}", "{{ctrl}}")
+) |> ggsave(filename=paste(figure_folder, "{{case}}_vs_{{ctrl}}_violinplot.pdf", sep="/"))
+  } else {
+  krsa_violin_plot(data_modeled[["scaled"]],
+  significant_peptides[["meanLFC"]][["0.2"]],
+  "Barcode",
+  groups = c("{{case}}", "{{ctrl}}"))
+  }
+
+```
+
+#### Waterfall Plot
+
+This waterfall represents the log2 fold changes between the two groups at each peptide.
+
+```{r}
+#| label: waterfall{{random}}
+#| fig-height: 8
+#| fig-width: 6
+#| fig-cap: "Waterfall Plot to show the distribution of change in peptide phosphorylation"
+
+# generates a waterfall of the log2 fold change values for the selected peptide (top peptides)
+if (!nchar(figure_folder)==0) {
+  krsa_waterfall(differential_phosphorylated_peptides, lfc_thr = 0.2, byChip = FALSE) |> ggsave(filename=paste(figure_folder, "{{case}}_vs_{{ctrl}}_krsawaterfall.pdf", sep="/"))
+  } else {
+  krsa_waterfall(differential_phosphorylated_peptides, lfc_thr = 0.2, byChip = FALSE)
+  }
+
+```
+
+#### Upstream Kinase Analysis
+
+The lab carefully curated and mapped the kinases that can act and phosphorylate each peptide present on the chip. This was achieved by using multiple sources including GPS 3.0, Kinexus Phosphonet, PhosphoELM and PhosphoSite Plus. Based on that association between peptides and kinases, a random sampling analysis is performed for these hits. The basic idea of *KRSA* is: For each iteration (*2000* iterations performed in this analysis), the same number of hits are randomly selected from the total 141/or 193 peptides present on the chip. Predicted kinases are then mapped to this sample list of peptides and number of kinases are determined. The kinase count from the actual hits and random sampling is then compared to determine the significance.
+
+```{r}
+#| label: krsa{{random}}
+
+# STK chip
+
+if (params[["chip_type"]] == "STK") {
+  chipCov <- KRSA_coverage_STK_PamChip_87102_v2
+  KRSA_file <- KRSA_Mapping_STK_PamChip_87102_v1
+} else if (params[["chip_type"]] == "PTK") {
+  chipCov <- KRSA_coverage_PTK_PamChip_86402_v1
+  KRSA_file <- KRSA_Mapping_PTK_PamChip_86402_v1
+}
+
+
+# Run the KRSA function across the different sets of peptides using the furrr package for parallel computing
+mutiple_krsa_outputs <- future_map(sigPeps_total, krsa,
+  .options = furrr_options(seed = TRUE), return_count = TRUE
+)
+saveRDS(mutiple_krsa_outputs,
+  file = file.path(
+    "datastore",
+    "{{run_prefix}}-multiple_krsa_output_{{case}}_{{ctrl}}_{{chip}}.RDS"
+  )
+)
+
+mutiple_krsa_outputs <- mutiple_krsa_outputs |>
+  map(~ pluck(.x, "KRSA_Table"))
+
+# Tidy output
+df <- data.frame(matrix(unlist(mutiple_krsa_outputs),
+  ncol = max(lengths(mutiple_krsa_outputs)), byrow = TRUE
+))
+df <- setNames(
+  do.call(rbind.data.frame, mutiple_krsa_outputs),
+  names(mutiple_krsa_outputs[["meanLFC.0.2"]])
+)
+
+df <- df |>
+  rownames_to_column("method") |>
+  select(Kinase, Z, method) |>
+  mutate(method = str_extract(method, "\\w+\\.\\w+\\.\\w+")) |>
+  mutate(method = gsub("(^\\w+)[\\.]", "\\1>", method)) |> # nolint: nonportable_path_linter.
+  mutate_if(is.numeric, round, 2L)
+
+df2 <- df |>
+  pivot_wider(names_from = method, values_from = Z)
+
+# Creates an average Z score table using the across chip analysis
+AvgZTable <- df |>
+  filter(grepl(fixed("mean"), method)) |>
+  select(Kinase, Z, method) |>
+  group_by(Kinase) |>
+  mutate(AvgZ = mean(Z))
+
+# Creates an average Z score table using the within chip analysis
+AvgZTable2 <- df |>
+  filter(!grepl(fixed("mean"), method)) |>
+  select(Kinase, Z, method) |>
+  group_by(Kinase) |>
+  mutate(AvgZ = mean(Z))
+
+AvgZTable2 |>
+  write_csv(
+    file.path(
+      "results",
+      "{{run_prefix}}-krsa_table_{{case}}_{{ctrl}}_{{chip}}.csv"
+    )
+  ) |>
+  select(Kinase, AvgZ) |>
+  unique() |>
+  mutate(Direction = if_else(AvgZ >= 0L, "Up", "Down")) |>
+  group_by(Direction) |>
+  nest() |>
+  mutate(filtered = map(data, \(x) {
+    x |>
+      mutate(AbsZ = abs(AvgZ)) |>
+      arrange(desc(AbsZ)) |>
+      slice_head(n = 10L) |>
+      select(-AbsZ)
+  })) |>
+  select(-data) |>
+  unnest(filtered) |>
+  ungroup() |>
+  select(-Direction) |>
+  arrange(desc(AvgZ)) |>
+  knitr::kable()
+
+
+# save file
+# AvgZTable %>% write_delim("withinChip_KRSA_Table_comp1.txt", delim = "\t")
+
+# Extract top kinases based on abs(Z) score
+kinases_hits <- AvgZTable2 |>
+  select(Kinase, AvgZ) |>
+  unique() |>
+  ungroup() |>
+  slice_max(AvgZ, n = 10L) |>
+  pull(Kinase)
+
+# krsa_top_hits(AvgZTable2, 1.75)
+# krsa_top_hits(AvgZTable2, 1.5)
+
+# Show the number of peptides per each set in a table
+krsa_show_peptides(sigPeps_total) |>
+  knitr::kable()
+```
+
+#### Z Scores Plot
+
+We will plot the individual and averaged Z scores using both the across and within chip analyses.
+
+```{r}
+#| label: zscoresPlot{{random}}
+#| fig-height: 6
+#| fig-width: 6
+#| fig-cap: "Waterfall plot of the Z Scores of each kinase family"
+
+# Generates Z scores waterfall plots
+krsa_zscores_plot(AvgZTable2)
+
+if (!nchar(figure_folder)==0) {
+  krsa_zscores_plot(AvgZTable2) |> ggsave(filename=paste(figure_folder, "{{case}}_vs_{{ctrl}}_krsazscoresplot.pdf", sep="/"))
+  } else {
+  krsa_zscores_plot(AvgZTable2)
+  }
+
+```
+
+#### Reverse KRSA Plot
+
+We will use the reverse KRSA plot function, to plot the log2 fold change values for all peptides mapped to kinase hits. This will help us examine the activity of the kinase
+
+```{r}
+#| label: revKRSAPlot{{random}}
+#| fig-height: 6
+#| fig-width: 6
+#| fig-cap: "Kinase Activity summary for each kinase family based on peptide phosphorylation"
+
+# plot the reverse KRSA figure for top kinases to determine their activity levels
+
+
+if (!nchar(figure_folder)==0) {
+  krsa_reverse_krsa_plot(chipCov, differential_phosphorylated_peptides, kinases_hits, 0.2, byChip = FALSE) |> ggsave(filename=paste(figure_folder, "{{case}}_vs_{{ctrl}}_krsarevplot.pdf", sep="/"))
+  } else {
+  krsa_reverse_krsa_plot(chipCov, differential_phosphorylated_peptides, kinases_hits, 0.2, byChip = FALSE)
+  }
+
+```
+
+#### Coverage Plot
+
+To view the coverage of kinases across the full list of peptides on the chip, we will use the coverage plot function
+
+```{r}
+#| label: covPlot{{random}}
+#| fig-height: 6
+#| fig-width: 6
+#| fig-cap: "Percentage of peptides each kinase family phosphorylates"
+
+# generates a kinase coverage plot
+krsa_coverage_plot(chipCov, AvgZTable2, chipType)
+
+if (!nchar(figure_folder)==0) {
+  krsa_coverage_plot(chipCov, AvgZTable2, chipType) |> ggsave(filename=paste(figure_folder, "{{case}}_vs_{{ctrl}}_krsacovplot.pdf", sep="/"))
+  } else {
+  krsa_coverage_plot(chipCov, AvgZTable2, chipType)
+  }
+
+```
+
+#### Ball Model Network
+
+We will view the ball model network function, to generate a model representing the protein-protein interactions between kinases
+
+```{r}
+#| label: netPlot{{random}}
+#| fig-width: 8
+#| fig-height: 8
+
+# Plot the network ball model
+
+
+if (!nchar(figure_folder)==0) {
+  graphics.off()
+  pdf(file=paste(figure_folder, "{{case}}_vs_{{ctrl}}_ball_network.pdf", sep="/"))
+  krsa_ball_model(kinases_hits, AvgZTable2, 10L, 2.5, 4.8)
+  dev.off()
+}else {
+  krsa_ball_model(kinases_hits, AvgZTable2, 10L, 2.5, 4.8)
+}
+
+```
+
+\newpage
+

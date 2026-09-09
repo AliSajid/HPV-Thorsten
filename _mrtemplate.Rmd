@@ -1,0 +1,353 @@
+---
+title: "Add Title Here"
+subtitle: "Customer Name Here"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+author: "Cognitive Disorders Research Lab"
+format: 
+  pdf:
+    documentclass: "scrreport"
+    fig-pos: 'htbp'
+    classoptions: ["oneside", "letterpaper"]
+    number-sections: true
+    include-in-header: 
+      text: |
+        \usepackage{float}
+editor: source
+toc: true
+params:
+  chip_type: "STK" # Change the Chip Type to PTK if needed
+  metadata_file: "kinome_data/metadata.txt" # Change the file name to the one you have
+  run_id_columnname: NULL # Change this to match your run_id column name in your metadata file
+  median_sigmb_columnname: NULL # Change this to match your median signal-minus-background filename column name in your metadata file
+  signal_saturation_columnname: NULL # Change this to match your signal saturation filename column name in your metadata file
+  pairwise: FALSE
+  pairing_variable: NULL # If your analysis is pairwise, change this
+  threshold: 2 # Change the threshold if necessary
+  prefix: "kinome"
+---
+
+```{r}
+#| label: "setup"
+#| include: FALSE
+library(KRSA)
+library(knitr)
+library(tidyverse)
+library(edgeR)
+library(limma)
+library(sva)
+library(gt) # nolint: unused_import_linter.
+library(furrr) # nolint: unused_import_linter.
+
+knitr::opts_chunk$set( # nolint: extraction_operator_linter.
+  collapse = TRUE,
+  comment = "#>",
+  cache = FALSE,
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+
+
+# Modify the prefix if pairwise
+prefix <- params[["prefix"]]
+
+if (params[["pairwise"]]) {
+  prefix <- str_c(prefix, "p-w", sep = "_")
+  if (is.null(params[["pairing_variable"]])) {
+        stop("Pairwise is TRUE: please set the pairing_variable parameter to a valid column name in the metadata file specified in the metadata_file parameter.")
+  }
+}
+
+```
+
+# Introduction
+
+## Background
+
+The Pamstation12 instrument provides a profiling of kinase activity of cell or tissue samples. The device is loaded with either serine/threonine or tyrosine microarray chips. Each chip has 4 wells, so four samples can be loaded on a single chip, and the Pamstation12 can accommodate 3 chips per run. The microarray represents 144 (STK chip) or 196 (PTK chip) reporter peptides that can be phosphorylated by serine/threonine or tyrosine kinases. The device measures the degree of the phosphorylation in real time by detecting fluorescent labeled antibodies at different exposure times. The list of peptides present in each microarray can be viewed here: [STK chip](https://pamgene.com/wp-content/uploads/2020/09/STK-144-PamChip-87102.pdf), [PTK chip](https://pamgene.com/wp-content/uploads/2020/09/PTK-196-PamChip-86402.pdf)
+
+\newpage
+
+![PamGene Kinase Activity Platform](images/pamgene_workflow.png){fig-align="center"}
+
+![PamGene Platform Detection](images/pamgene_detectionFig.png){fig-align="center"}
+
+# Run Design
+
+Designing the placement of the samples on the chips and arrays is important to consider due to the variability across different chips and batches. During the run some wells are subject to fail and their data cannot be analyzed and shown below as red.
+
+```{r}
+#| label: "design"
+#| fig-width: 4
+#| fig-height: 4
+
+tt <- tibble(
+  num = rep(c(3.5, 2.5, 1.5, 0.5), 3L),
+  chips = rep(c(2L, 5L, 8L), each = 4L),
+  colr = c(rep(1L, 12L)),
+  nms = rep(LETTERS[1L:4L], 3L)
+)
+rundes <- ggplot() +
+  geom_rect(aes(xmin = 1L, xmax = 3L, ymin = 0L, ymax = 4L), fill = "gray30") +
+  geom_rect(aes(xmin = 4L, xmax = 6L, ymin = 0L, ymax = 4L), fill = "gray30") +
+  geom_rect(aes(xmin = 7L, xmax = 9L, ymin = 0L, ymax = 4L), fill = "gray30") +
+  xlim(0L, 10L) +
+  theme_void()
+
+rundes + geom_point(
+  data = tt, aes(chips, num, color = factor(colr)),
+  size = 13L, show.legend = FALSE
+) +
+  geom_text(data = tt, aes(chips, num, label = nms), size = 1.6) +
+  scale_color_manual(values = c("green3", "red3"))
+```
+
+# Results
+
+## Image Analysis
+
+The first step of analyzing the run is to convert the images taken by the PamStation of each array at different exposure times to numerical values. This is done by the Bionavigator software developed by PamGene. The software recognizes the grid of the array with the aid of the searching algorithm (Pamgrid) to correctly identify each spot on the array. The numbers produced by this software represent the median value of the foreground pixels minus the median value of the background pixels to produce the median signal minus background (Median_SigmBg).
+
+## Reading Data
+
+The first step will be reading the crosstab view bionavigator files (Median_SigmBg and Signal_Saturation) and defining the PamChip type (STK or PTK). The raw data is read and then transformed to be in tidy format for an easier analysis, modeling, and visualizing.
+
+```{r}
+#| label: "read-data"
+source('read_mrmetadata_file.R')
+run_prefix <- prefix
+
+if (params[["pairwise"]]) {
+    meta_data <- read_metadata_file(params[["metadata_file"]], run_id_columnname=params[["run_id_columnname"]], median_sigmb_columnname=params[["median_sigmb_columnname"]], signal_saturation_columnname=params[["signal_saturation_columnname"]], pairing_variable_columnname=params[["pairing_variable"]])
+} else {
+  meta_data <- read_metadata_file(params[["metadata_file"]], run_id_columnname=params[["run_id_columnname"]], median_sigmb_columnname=params[["median_sigmb_columnname"]], signal_saturation_columnname=params[["signal_saturation_columnname"]])
+}
+chipType <- params[["chip_type"]]
+
+raw_data <- do.call(rbind, lapply(1:length(unique(meta_data$run_id)), function(X) {
+                                    sigmb_file <- meta_data[X,]$median_sigmb_file
+                                    saturation_file <- meta_data[X,]$signal_saturation_file
+                                    data <- KRSA::krsa_read(signal_file=sigmb_file, signal_saturation=saturation_file)
+                                    data$run_id <- unique(meta_data$run_id)[X]
+                                    data
+}))
+```
+
+## QC Initial Steps and Groups Assignments
+
+We will perform a couple of quality control steps to deal with negative values in the data and adjust based on signal saturation (optional). Next, we will define a new column to represent the grouping. And then, we will extract end point signal values
+
+```{r}
+#| label: "quality-control"
+
+# qc processing
+qc_data <- krsa_qc_steps(raw_data) |>
+  mutate(Barcode=paste0(run_id, "_", Barcode)) |> 
+  mutate(
+    Group = `Tissue status`,
+    SampleName = paste0(`Patient code`, "_", Group, "_", Barcode)
+  )
+
+sample_name_to_run_id <- qc_data |> select(SampleName, run_id, `Patient code`) |> distinct()
+
+groups <- unique(qc_data[["Group"]])
+
+# extract end level signal values @ all max exposure time (100ms)
+data_pw_max <- krsa_extractEndPointMaxExp(qc_data, chipType)
+
+# extract end level signal values end level @ all exposure times
+data_pw <- krsa_extractEndPoint(qc_data, chipType) |> left_join(sample_name_to_run_id, by=c("SampleName")) |> select(SampleName, `Patient code`, Peptide, ExposureTime, Signal, Barcode, Group, run_id)
+
+# Create a unique sample-exposure_time identifier for wide format columns
+wide_data_temp <- data_pw |>
+  mutate(sample_exposure_id = paste(SampleName, ExposureTime, sep = "_")) |>
+  select(Peptide, sample_exposure_id, SampleName, ExposureTime, Signal, Group, run_id, `Patient code`, Barcode) # Only relevant columns for pivot
+
+design_df <- wide_data_temp |> select(sample_exposure_id, `Patient code`, SampleName, ExposureTime, Group, run_id, Barcode) |> distinct()
+
+# Pivot wider
+data_matrix_wide <- wide_data_temp |> select(sample_exposure_id, Peptide, Signal) |>
+  pivot_wider(names_from = sample_exposure_id, values_from = Signal)
+peptide <- data_matrix_wide$Peptide
+data_matrix_wide <- data_matrix_wide |> select(-Peptide)
+na_indices <- data_matrix_wide |>
+  rowid_to_column("row_index") |> # Add a column for original row index
+  filter(if_any(everything(), is.na)) |> # Filter rows where any column is NA
+  pull(row_index)
+column_names <- colnames(data_matrix_wide)
+data_matrix_wide <- data_matrix_wide |> as.matrix()
+data_matrix_wide <- data_matrix_wide[-na_indices,]
+colnames(data_matrix_wide) <- column_names
+rownames(data_matrix_wide) <- peptide[-na_indices]
+mod <- model.matrix(~ExposureTime + Group, data = design_df)
+
+adjusted_data_combat_sva <- ComBat(dat = data_matrix_wide,
+                                   batch = as.factor(design_df$`Barcode`),
+                                   mod = mod, # Use the design matrix including SVs
+                                   par.prior = TRUE,
+                                   prior.plot = FALSE)
+adjusted_data_combat_sva <- as.data.frame(adjusted_data_combat_sva)
+colnames(adjusted_data_combat_sva) <- column_names
+adjusted_data_combat_sva$Peptide <- peptide[-na_indices]
+data_pw <- pivot_longer(adjusted_data_combat_sva, cols=-Peptide, names_to="sample_exposure_id", values_to="Signal") |> left_join(design_df, by="sample_exposure_id") |> select(SampleName, Peptide, ExposureTime, Signal, Barcode, Group, run_id)
+
+```
+
+## QC Steps and Model Fitting
+
+We will filter out peptides with low signals. In order to combine the values from different exposure times into a single value, a simple linear regression model of the *Median_SigmBg* as a function of exposure time is fitted. The slope of of the model fit and $R^2$ are then used for quality control and samples comparison. The slope is also scaled by multiplying by 100 and log2 transformed (*Slope_Transformed*). We then filter out peptides with poor linear fit and references peptides.
+
+```{r}
+#| label: "model"
+# Filter out peptides with low signals
+source('filter_low_peps.R')
+source('nonlinear_checks.R')
+high_peptides <- mr_krsa_filter_lowPeps(data_pw_max, threshold=5L, n_threshold=0.4)
+
+# Fit the linear model
+# This will produce a list of data frames:
+# scaled: the Slope_Transformed values (see above for more info on Slope_Transformed)
+# normalized: the Slope_Transformed values but normalized by Chip/Barcode
+# Grouped: The mean of Slope_Transformed values for all samples within a group
+peptides_to_keep <- krsa_scaleModel(data_pw, high_peptides) |> sapply(function(X) {
+                                                                    X |> group_by(Peptide) |> filter(all(!is.na(slope))) |> ungroup() |> pull(Peptide) |> unique()
+                                   }) |> reduce(union)
+data_modeled <- krsa_scaleModel(data_pw, peptides_to_keep)
+# Filter out peptides weak linear fit
+linear_peptides <- mr_krsa_filter_nonLinear(data_modeled[["scaled"]], threshold=0.8, n_threshold=0.4)
+
+# Filter out reference peptides
+# clean_peptides <- krsa_filter_ref_pep(linear_peptides)
+clean_peptides <- krsa_filter_ref_pep(high_peptides)
+```
+
+## Global Signal Intensity
+
+For a global signal intensity across all samples/groups, few figures can be plotted based on the *Slope_Transformed* values.
+
+### Global CV Plots
+
+We will plot the coefficient of variation on both the normal and normalized fits. This will help us to identify groups with high variation that could be explained by sample outliers.
+
+```{r}
+#| label: "global-cv-plot"
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Coefficient of Variation plotted for each peptide across all 4 groups"
+#| eval: !expr params$pairwise
+
+# Plot a CV figure using the modeled normalized data
+krsa_cv_plot(data_modeled[["normalized"]], clean_peptides)
+```
+
+### Global Violin Plots
+
+We will plot violin figures to examine global signal differences between groups/samples.
+
+```{r}
+#| label: "global-violin-plot-by-group"
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Violin Plots for signal intensity Distribution Across Groups for all replicates"
+
+# Plot a violin figure and facet by the (Group) variable
+krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Group")
+```
+
+```{r}
+#| label: "global-violin-plot-by-chip"
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Violin Plots for signal intensity Distribution Across Chips for all replicates"
+
+# Plot a violin figure and facet by the (Barcode) variable
+krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Barcode")
+```
+
+### Global Heatmaps
+
+The heatmap represent all the peptides present on the chip except the positive/internal controls and peptides that failed to pass QC. The heatmaps are scaled by row to highlight the peptide signal differences across the samples. A hierarchical unsupervised clustering is applied both on the peptides and the samples to group potentially similar signatures.
+
+```{r}
+#| label: "global-signal-heatmap-individual"
+#| fig-cap: "Row and chip normalized intensity values for the selected peptides"
+#| fig-height: 6
+#| fig-width: 6
+
+# Generates a heatmap using the modeled normalized data
+krsa_heatmap(data_modeled[["normalized"]], clean_peptides, scale = "row")
+```
+
+```{r}
+#| label: "global-signal-heatmap-grouped"
+#| fig-cap: "Row and group normalized intensity values for the selected peptides"
+#| fig-height: 6
+#| fig-width: 6
+
+# Generates a heatmap using the modeled grouped data
+krsa_heatmap_grouped(data_modeled[["grouped"]], clean_peptides, scale = "row")
+```
+
+## Group Comparison
+
+To compare between samples, a two-group comparison is performed. In this case, there are three group comparisons:
+
+- Case 1 vs Control 1
+
+The *Slope_Transformed* ratio between each group, paired by chip, is calculated to the fold change. Based on the fold change, peptides that pass a certain fold change threshold are considered significant hits. Also, quality control steps applied in each comparison to filter out peptides that do not reach specific criteria:
+
+- The *Median_SigmBg* at max exposure *100ms* must be above a certain value\
+- $R^2$ of the linear model fit must be above a threshold value
+
+These *Filtering Parameters* (fold change threshold, QC criteria) can be modified to adjust the stringency of the analysis. The *Filtering Parameters* that are used for this analysis:
+
+- The *Median_SigmBg* at max exposure *100ms* must be equal or above 5\
+- $R^2$ of the linear model fit must be above or equal 0.8\
+- Log fold change (LFC) cutoffs at (0.2,0.3,0.4)
+
+```{r}
+#| label: "group-comp-list"
+
+# You can define the comparison groups here.
+# The group names are in the `groups` variable and you can use subscripting to select the groups
+# For example, to compare the first and fourth groups, you can use `groups[1]` and `groups[4]`
+# Then copy the next block as many times as there are comparisons and change the `COMP1` to `COMP2`, `COMP3`, etc.
+# Also make sure that the label is unique for each block
+
+# Define Groups to be compared
+comparisons <- list(
+  COMP1 = c(groups[[2L]], groups[[1L]])
+)
+```
+
+```{r}
+#| results: "asis"
+#| echo: FALSE
+#| include: TRUE
+#| label: "childA"
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Heatmap of pairwise group comparison"
+
+case <- comparisons[["COMP1"]][[1L]]
+ctrl <- comparisons[["COMP1"]][[2L]]
+random <- "A"
+threshold <- params[["threshold"]]
+
+src <- knitr::knit_expand(
+  file = "_mrcomparison.Rmd",
+  case = case, ctrl = ctrl, threshold = threshold,
+  chip = params[["chip_type"]]
+)
+
+res <- knitr::knit_child(text = src, quiet = TRUE)
+
+cat(res, sep = "\n")
+```
+
+
+# Session Info
+
+```{r session_info}
+devtools::session_info()
+```

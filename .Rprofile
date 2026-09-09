@@ -1,3 +1,4 @@
+source("renv/activate.R")
 r_profile <- file.path(Sys.getenv("HOME"), ".Rprofile")
 
 if (file.exists(r_profile)) {

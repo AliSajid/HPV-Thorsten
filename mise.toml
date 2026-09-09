@@ -1,2 +1,5 @@
 [env]
 KMP_DUPLICATE_LIB_OK = true
+
+[tools]
+"aqua:quarto-dev/quarto-cli" = "1.10.18"

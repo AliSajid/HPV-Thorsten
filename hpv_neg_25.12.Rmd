@@ -1,6 +1,6 @@
 ---
-title: "HPV Negative"
-subtitle: "Thorsten"
+title: "HPV Negative - 5,15,30 Minutes"
+subtitle: "Nanik & Thorsten"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Cognitive Disorders Research Lab"
 format: 
@@ -130,11 +130,23 @@ We will perform a couple of quality control steps to deal with negative values i
 # qc processing
 qc_data <- krsa_qc_steps(raw_data) |>
     mutate(
-        Group = SampleName,
-        SampleName = paste0(Group, "_", Barcode)
+        Group = case_when(
+            str_detect(SampleName, "0Gy") ~ "NegCTL",
+            str_detect(SampleName, "30m") ~ "Neg30m",
+            str_detect(SampleName, "15m") ~ "Neg15m",
+            str_detect(SampleName, "5m") ~ "Neg5m",
+        ),
+        SampleName = paste0(Group, "_", str_extract(Barcode, "\\d{3}$"))
     )
 
 groups <- unique(qc_data[["Group"]])
+
+group_labels <- c(
+    NegCTL = "HPV- Samples / 0 Gy",
+    Neg30m = "HPV- Samples / 6 Gy / 30 m",
+    Neg15m = "HPV- Samples / 6 Gy / 15 m",
+    Neg5m = "HPV- Samples / 6 Gy / 5 m"
+)
 
 # extract end level signal values @ all max exposure time (100ms)
 data_pw_max <- krsa_extractEndPointMaxExp(qc_data, chipType)
@@ -271,7 +283,10 @@ if (!is.null(params[["figure_output"]])) {
 
 To compare between samples, a two-group comparison is performed. In this case, there are three group comparisons:
 
-- Case 1 vs Control 1
+- `r group_labels[[groups[[2]]]]` vs `r group_labels[[groups[[1]]]]`
+- `r group_labels[[groups[[3]]]]` vs `r group_labels[[groups[[1]]]]`
+- `r group_labels[[groups[[4]]]]` vs `r group_labels[[groups[[1]]]]`
+
 
 The *Slope_Transformed* ratio between each group, paired by chip, is calculated to the fold change. Based on the fold change, peptides that pass a certain fold change threshold are considered significant hits. Also, quality control steps applied in each comparison to filter out peptides that do not reach specific criteria:
 

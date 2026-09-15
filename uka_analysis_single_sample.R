@@ -369,7 +369,7 @@ if (length(signal_files) == 0L) {
   message(
     "No p-w differential peptide files ending in ",
     "'-STK.csv' or '-PTK.csv' were found under results/. ",
-    "Skipping UKA analysis."
+    "Skipping Single-Sample UKA analysis."
   )
 
 } else {

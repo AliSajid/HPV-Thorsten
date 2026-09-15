@@ -1,6 +1,6 @@
 ---
-title: "HPV Pos / Neg with Radiation"
-subtitle: "Thorsten"
+title: "HPV +/- with/out radiation at 15 min"
+subtitle: "Nanik & Thorsten"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Cognitive Disorders Research Lab"
 format: 
@@ -130,11 +130,23 @@ We will perform a couple of quality control steps to deal with negative values i
 # qc processing
 qc_data <- krsa_qc_steps(raw_data) |>
     mutate(
-        Group = SampleName,
-        SampleName = paste0(Group, "_", Barcode)
+           Group = case_when(
+                str_detect(SampleName, "HPV+") && str_detect(SampleName, "0 Gy") ~ "PosCTL"
+                str_detect(SampleName, "HPV+") && str_detect(SampleName, "6 Gy") ~ "PosTRT"
+                str_detect(SampleName, "HPV-") && str_detect(SampleName, "0 Gy") ~ "NegCTL"
+                str_detect(SampleName, "HPV-") && str_detect(SampleName, "6 Gy") ~ "NegTRT"
+           ),
+        SampleName = paste0(Group, "_", str_extract(Barcode, "\\d{3}$"))
     )
 
 groups <- unique(qc_data[["Group"]])
+
+group_labels  <- c(
+                   PosCTL = "HPV+ Untreated",
+                   PosTRT = "HPV+ Treated 6 Gy / 15 m",
+                   NegCTL = "HPV- Untreated",
+                   NegTRT = "HPV- Treated 6 Gy / 15 m",
+)
 
 # extract end level signal values @ all max exposure time (100ms)
 data_pw_max <- krsa_extractEndPointMaxExp(qc_data, chipType)
@@ -271,7 +283,11 @@ if (!is.null(params[["figure_output"]])) {
 
 To compare between samples, a two-group comparison is performed. In this case, there are three group comparisons:
 
-- Case 1 vs Control 1
+
+- `r group_labels[[groups[[2]]]]` vs `r group_labels[[groups[[1]]]]`
+- `r group_labels[[groups[[4]]]]` vs `r group_labels[[groups[[3]]]]`
+- `r group_labels[[groups[[1]]]]` vs `r group_labels[[groups[[3]]]]`
+- `r group_labels[[groups[[2]]]]` vs `r group_labels[[groups[[4]]]]`
 
 The *Slope_Transformed* ratio between each group, paired by chip, is calculated to the fold change. Based on the fold change, peptides that pass a certain fold change threshold are considered significant hits. Also, quality control steps applied in each comparison to filter out peptides that do not reach specific criteria:
 
@@ -297,8 +313,9 @@ These *Filtering Parameters* (fold change threshold, QC criteria) can be modifie
 # Define Groups to be compared
 comparisons <- list(
     COMP1 = c(groups[[2L]], groups[[1L]]),
-    COMP2 = c(groups[[3L]], groups[[1L]]),
-    COMP3 = c(groups[[4L]], groups[[1L]])
+    COMP2 = c(groups[[4L]], groups[[3L]]),
+    COMP3 = c(groups[[1L]], groups[[3L]]),
+    COMP3 = c(groups[[2L]], groups[[4L]])
 )
 ```
 
@@ -366,6 +383,32 @@ cat(res, sep = "\n")
 case <- comparisons[["COMP3"]][[1L]]
 ctrl <- comparisons[["COMP3"]][[2L]]
 random <- "C"
+threshold <- params[["threshold"]]
+
+src <- knitr::knit_expand(
+    file = "_comparison.Rmd",
+    case = case, ctrl = ctrl, threshold = threshold,
+    figure_output = params[["figure_output"]],
+    chip = params[["chip_type"]]
+)
+
+res <- knitr::knit_child(text = src, quiet = TRUE)
+
+cat(res, sep = "\n")
+```
+
+```{r}
+#| results: "asis"
+#| echo: FALSE
+#| include: TRUE
+#| label: "childD"
+#| fig-width: 6
+#| fig-height: 6
+#| fig-cap: "Heatmap of pairwise group comparison"
+
+case <- comparisons[["COMP4"]][[1L]]
+ctrl <- comparisons[["COMP4"]][[2L]]
+random <- "D"
 threshold <- params[["threshold"]]
 
 src <- knitr::knit_expand(

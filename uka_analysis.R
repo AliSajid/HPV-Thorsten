@@ -82,7 +82,7 @@ identify_signal_comparison <- function(signal_path) {
   control_candidates <- groups[
     str_detect(
       groups,
-      regex("(^CTL($|_)|control)", ignore_case = TRUE)
+      regex("(^?CTL($|_)|control)", ignore_case = TRUE)
     )
   ]
 

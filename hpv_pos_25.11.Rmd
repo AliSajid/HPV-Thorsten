@@ -1,6 +1,6 @@
 ---
-title: "HPV And Radiation"
-subtitle: "Thorsten and Nanek"
+title: "HPV Positive - 1,4,24 hours"
+subtitle: "Nanik & Thorsten"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Cognitive Disorders Research Lab"
 format: 
@@ -19,7 +19,7 @@ params:
   signal_file: "kinome_data/E2-_ExporttComplete_Median_SigmBg_260907092513.txt" # Change the file name to the one you have
   saturation_file: "kinome_data/E2-_ExporttComplete_Signal_Saturation_260907092514.txt" # Change the file name to the one you have
   threshold: 2 # Change the threshold if necessary
-  prefix: exp2
+  prefix: hpv_pos_25.11
   pairwise: FALSE
   figure_output: NULL
 ---
@@ -130,11 +130,23 @@ We will perform a couple of quality control steps to deal with negative values i
 # qc processing
 qc_data <- krsa_qc_steps(raw_data) |>
     mutate(
-        Group = SampleName,
+        Group = case_when(
+            str_detect(SampleName, "0Gy") ~ "PosCTL",
+            str_detect(SampleName, "24h") ~ "Pos24h",
+            str_detect(SampleName, "4h") ~ "Pos4h",
+            str_detect(SampleName, "1h") ~ "Pos1h",
+        ),
         SampleName = paste0(Group, "_", Barcode)
     )
 
 groups <- unique(qc_data[["Group"]])
+
+group_labels <- c(
+    PosCTL = "HPV+ Samples / 0 Gy",
+    Pos24h = "HPV+ Samples / 6 Gy / 24 h",
+    Pos4h = "HPV+ Samples / 6 Gy / 4 h",
+    Pos1h = "HPV+ Samples / 6 Gy / 1 h"
+)
 
 # extract end level signal values @ all max exposure time (100ms)
 data_pw_max <- krsa_extractEndPointMaxExp(qc_data, chipType)

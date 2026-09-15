@@ -1,6 +1,6 @@
 ---
-title: "HPV+ Samples"
-subtitle: "Thorsten"
+title: "HPV Positive - 5,15,30 Minutes"
+subtitle: "Nanik & Thorsten"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Cognitive Disorders Research Lab"
 format: 
@@ -36,12 +36,12 @@ library(gt) # nolint: unused_import_linter.
 library(furrr) # nolint: unused_import_linter.
 
 knitr::opts_chunk$set( # nolint: extraction_operator_linter.
-  collapse = TRUE,
-  comment = "#>",
-  cache = FALSE,
-  echo = FALSE,
-  message = FALSE,
-  warning = FALSE
+    collapse = TRUE,
+    comment = "#>",
+    cache = FALSE,
+    echo = FALSE,
+    message = FALSE,
+    warning = FALSE
 )
 
 
@@ -50,9 +50,8 @@ knitr::opts_chunk$set( # nolint: extraction_operator_linter.
 prefix <- params[["prefix"]]
 
 if (params[["pairwise"]]) {
-  prefix <- str_c(prefix, "p-w", sep = "_")
+    prefix <- str_c(prefix, "p-w", sep = "_")
 }
-
 ```
 
 # Introduction
@@ -77,24 +76,24 @@ Designing the placement of the samples on the chips and arrays is important to c
 #| fig-height: 4
 
 tt <- tibble(
-  num = rep(c(3.5, 2.5, 1.5, 0.5), 3L),
-  chips = rep(c(2L, 5L, 8L), each = 4L),
-  colr = c(rep(1L, 12L)),
-  nms = rep(LETTERS[1L:4L], 3L)
+    num = rep(c(3.5, 2.5, 1.5, 0.5), 3L),
+    chips = rep(c(2L, 5L, 8L), each = 4L),
+    colr = c(rep(1L, 12L)),
+    nms = rep(LETTERS[1L:4L], 3L)
 )
 rundes <- ggplot() +
-  geom_rect(aes(xmin = 1L, xmax = 3L, ymin = 0L, ymax = 4L), fill = "gray30") +
-  geom_rect(aes(xmin = 4L, xmax = 6L, ymin = 0L, ymax = 4L), fill = "gray30") +
-  geom_rect(aes(xmin = 7L, xmax = 9L, ymin = 0L, ymax = 4L), fill = "gray30") +
-  xlim(0L, 10L) +
-  theme_void()
+    geom_rect(aes(xmin = 1L, xmax = 3L, ymin = 0L, ymax = 4L), fill = "gray30") +
+    geom_rect(aes(xmin = 4L, xmax = 6L, ymin = 0L, ymax = 4L), fill = "gray30") +
+    geom_rect(aes(xmin = 7L, xmax = 9L, ymin = 0L, ymax = 4L), fill = "gray30") +
+    xlim(0L, 10L) +
+    theme_void()
 
 rundes + geom_point(
-  data = tt, aes(chips, num, color = factor(colr)),
-  size = 13L, show.legend = FALSE
+    data = tt, aes(chips, num, color = factor(colr)),
+    size = 13L, show.legend = FALSE
 ) +
-  geom_text(data = tt, aes(chips, num, label = nms), size = 1.6) +
-  scale_color_manual(values = c("green3", "red3"))
+    geom_text(data = tt, aes(chips, num, label = nms), size = 1.6) +
+    scale_color_manual(values = c("green3", "red3"))
 ```
 
 # Results
@@ -116,8 +115,8 @@ chipType <- params[["chip_type"]]
 
 # Read crosstab view bionavigator files and tidy data
 raw_data <- krsa_read(
-  signal_file = params[["signal_file"]],
-  signal_saturation = params[["saturation_file"]]
+    signal_file = params[["signal_file"]],
+    signal_saturation = params[["saturation_file"]]
 )
 ```
 
@@ -130,12 +129,24 @@ We will perform a couple of quality control steps to deal with negative values i
 
 # qc processing
 qc_data <- krsa_qc_steps(raw_data) |>
-  mutate(
-    Group = SampleName,
-    SampleName = paste0(Group, "_", Barcode)
-  )
+    mutate(
+        Group = case_when(
+            str_detect(SampleName, "0Gy") ~ "PosCTL",
+            str_detect(SampleName, "30m") ~ "Pos30m",
+            str_detect(SampleName, "15m") ~ "Pos15m",
+            str_detect(SampleName, "5m") ~ "Pos5m",
+        ),
+        SampleName = paste0(Group, "_", Barcode)
+    )
 
 groups <- unique(qc_data[["Group"]])
+
+group_labels <- c(
+    PosCTL = "HPV+ Samples / 0 Gy",
+    Pos30m = "HPV+ Samples / 6 Gy / 30 m",
+    Pos15m = "HPV+ Samples / 6 Gy / 15 m",
+    Pos5m = "HPV+ Samples / 6 Gy / 5 m"
+)
 
 # extract end level signal values @ all max exposure time (100ms)
 data_pw_max <- krsa_extractEndPointMaxExp(qc_data, chipType)
@@ -182,14 +193,13 @@ We will plot the coefficient of variation on both the normal and normalized fits
 #| fig-height: 6
 #| fig-cap: "Coefficient of Variation plotted for each peptide across all 4 groups"
 #| eval: !expr params$pairwise
-if(!is.null(params[["figure_output"]])) dir.create(params[["figure_output"]])
+if (!is.null(params[["figure_output"]])) dir.create(params[["figure_output"]])
 # Plot a CV figure using the modeled normalized data
 if (!is.null(params[["figure_output"]])) {
-  krsa_cv_plot(data_modeled[["normalized"]], clean_peptides) |> ggsave(filename=paste(params[["figure_output"]], "cv_plot.pdf", sep="/"))
-  } else {
-  krsa_cv_plot(data_modeled[["normalized"]], clean_peptides)
-  }
-
+    krsa_cv_plot(data_modeled[["normalized"]], clean_peptides) |> ggsave(filename = paste(params[["figure_output"]], "cv_plot.pdf", sep = "/"))
+} else {
+    krsa_cv_plot(data_modeled[["normalized"]], clean_peptides)
+}
 ```
 
 ### Global Violin Plots
@@ -205,11 +215,10 @@ We will plot violin figures to examine global signal differences between groups/
 # Plot a violin figure and facet by the (Group) variable
 
 if (!is.null(params[["figure_output"]])) {
-  krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Group") |> ggsave(filename=paste(params[["figure_output"]], "violin_plot_bygroup.pdf", sep="/"))
-  } else {
-  krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Group")
-  }
-
+    krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Group") |> ggsave(filename = paste(params[["figure_output"]], "violin_plot_bygroup.pdf", sep = "/"))
+} else {
+    krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Group")
+}
 ```
 
 ```{r}
@@ -220,11 +229,10 @@ if (!is.null(params[["figure_output"]])) {
 
 # Plot a violin figure and facet by the (Barcode) variable
 if (!is.null(params[["figure_output"]])) {
-  krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Barcode") |> ggsave(filename=paste(params[["figure_output"]], "violin_plot_bybarcode.pdf", sep="/"))
-  } else {
-  krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Barcode")
-  }
-
+    krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Barcode") |> ggsave(filename = paste(params[["figure_output"]], "violin_plot_bybarcode.pdf", sep = "/"))
+} else {
+    krsa_violin_plot(data_modeled[["scaled"]], clean_peptides, "Barcode")
+}
 ```
 
 ### Global Heatmaps
@@ -240,16 +248,15 @@ The heatmap represent all the peptides present on the chip except the positive/i
 # Generates a heatmap using the modeled normalized data
 nheatmap <- krsa_heatmap(data_modeled[["normalized"]], clean_peptides, scale = "row")
 if (!is.null(params[["figure_output"]])) {
-  graphics.off()
-  pdf(file = paste(params[["figure_output"]], "normalized_heatmap.pdf", sep="/"))
-  grid::grid.newpage()
-  grid::grid.draw(nheatmap$gtable)
-  dev.off()
+    graphics.off()
+    pdf(file = paste(params[["figure_output"]], "normalized_heatmap.pdf", sep = "/"))
+    grid::grid.newpage()
+    grid::grid.draw(nheatmap$gtable)
+    dev.off()
 } else {
-  grid::grid.newpage()
-  grid::grid.draw(nheatmap$gtable)
+    grid::grid.newpage()
+    grid::grid.draw(nheatmap$gtable)
 }
-
 ```
 
 ```{r}
@@ -261,14 +268,14 @@ if (!is.null(params[["figure_output"]])) {
 # Generates a heatmap using the modeled grouped data
 gheatmap <- krsa_heatmap_grouped(data_modeled[["grouped"]], clean_peptides, scale = "row")
 if (!is.null(params[["figure_output"]])) {
-  graphics.off()
-  pdf(file = paste(params[["figure_output"]], "normalized_grouped_heatmap.pdf", sep="/"))
-  grid::grid.newpage()
-  grid::grid.draw(gheatmap$gtable)
-  dev.off()
+    graphics.off()
+    pdf(file = paste(params[["figure_output"]], "normalized_grouped_heatmap.pdf", sep = "/"))
+    grid::grid.newpage()
+    grid::grid.draw(gheatmap$gtable)
+    dev.off()
 } else {
-  grid::grid.newpage()
-  grid::grid.draw(gheatmap$gtable)
+    grid::grid.newpage()
+    grid::grid.draw(gheatmap$gtable)
 }
 ```
 
@@ -276,7 +283,10 @@ if (!is.null(params[["figure_output"]])) {
 
 To compare between samples, a two-group comparison is performed. In this case, there are three group comparisons:
 
-- Case 1 vs Control 1
+- `r group_labels[[groups[[2]]]]` vs `r group_labels[[groups[[1]]]]`
+- `r group_labels[[groups[[3]]]]` vs `r group_labels[[groups[[1]]]]`
+- `r group_labels[[groups[[4]]]]` vs `r group_labels[[groups[[1]]]]`
+
 
 The *Slope_Transformed* ratio between each group, paired by chip, is calculated to the fold change. Based on the fold change, peptides that pass a certain fold change threshold are considered significant hits. Also, quality control steps applied in each comparison to filter out peptides that do not reach specific criteria:
 
